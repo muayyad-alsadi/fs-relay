@@ -35,7 +35,7 @@ The server names a mount with a UUIDv7 and returns `<uuid>.<signature>`. The sig
 
 ## Clients
 
-A namespace is an existing directory under the data root. The server creates the data root at startup but never a namespace. A `join` for a missing namespace is HTTP 404, and the mount stops.
+A namespace is an existing directory under the data root. The server creates the data root at startup, locks it against a second fs-relay process unless `-force-multi-serve` is passed, and never creates a namespace. A `join` for a missing namespace is HTTP 404, and the mount stops.
 
 A mount is one of two clients. Both speak the same envelope. They differ in how calls and events travel. The mount defaults to the websocket. `-post` selects the other. `-ws` is the same as the default. Passing both flags is an error.
 

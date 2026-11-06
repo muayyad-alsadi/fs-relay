@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -22,9 +23,10 @@ type Tree struct {
 	mu sync.Mutex
 	ns map[string]*names
 
-	fmu    sync.Mutex
-	files  map[uint64]*openFile
-	nextFH uint64
+	fmu      sync.Mutex
+	files    map[uint64]*openFile
+	nextFH   uint64
+	lockFile *os.File
 }
 
 type entry struct {
@@ -79,6 +81,44 @@ func (t *Tree) Prepare() error {
 	return nil
 }
 
+// Lock takes an exclusive non-blocking lock on the data root so a second
+// server cannot serve the same directory unless forced.
+func (t *Tree) Lock() error {
+	path := filepath.Join(t.root, ".fs-relay.lock")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return fmt.Errorf("data directory %s: %w", t.root, err)
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return fmt.Errorf("data directory %s: %w", t.root, err)
+	}
+	if !info.Mode().IsRegular() {
+		_ = f.Close()
+		return fmt.Errorf("data directory %s: %s is not a regular file", t.root, path)
+	}
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		b, _ := os.ReadFile(path)
+		_ = f.Close()
+		pid := strings.TrimSpace(string(b))
+		if pid != "" {
+			return fmt.Errorf("data directory %s is already served by pid %s", t.root, pid)
+		}
+		return fmt.Errorf("data directory %s is already served", t.root)
+	}
+	_ = f.Truncate(0)
+	_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
+	t.fmu.Lock()
+	old := t.lockFile
+	t.lockFile = f
+	t.fmu.Unlock()
+	if old != nil {
+		_ = old.Close()
+	}
+	return nil
+}
+
 // CheckNamespace stats data/<ns> every time. Connections use it so a
 // namespace that was removed is refused.
 // CheckNamespace stats data/<ns> and requires a directory. It runs on every
@@ -88,7 +128,7 @@ func (t *Tree) CheckNamespace(ns string) error {
 	if err := wire.CheckNS(ns); err != nil {
 		return err
 	}
-	info, err := os.Stat(filepath.Join(t.root, ns))
+	info, err := os.Lstat(filepath.Join(t.root, ns))
 	if err != nil {
 		return err
 	}
@@ -110,15 +150,20 @@ func (t *Tree) BlockSize() (int, error) {
 	return int(st.Blksize), nil
 }
 
-// Close closes every open file.
+// Close closes every open file and releases the data directory lock.
 func (t *Tree) Close() error {
 	t.fmu.Lock()
 	files := t.files
 	t.files = map[uint64]*openFile{}
+	lf := t.lockFile
+	t.lockFile = nil
 	t.fmu.Unlock()
 	var err error
 	for _, h := range files {
 		err = errors.Join(err, h.f.Close())
+	}
+	if lf != nil {
+		err = errors.Join(err, lf.Close())
 	}
 	return err
 }

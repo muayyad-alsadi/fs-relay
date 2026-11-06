@@ -111,6 +111,8 @@ func (t *Tree) source(ns string, ino, fh uint64) (*os.File, func(), error) {
 		}
 		return h.f, func() { t.done(h) }, nil
 	}
+	t.op.RLock()
+	defer t.op.RUnlock()
 	rel, err := t.relOf(ns, ino)
 	if err != nil {
 		return nil, nil, err
@@ -153,31 +155,41 @@ func reads(ctx context.Context, t *Tree, p wire.Params) (wire.Result, error) {
 }
 
 func readCapped(t *Tree, ns string, ino uint64) []byte {
-	rel, err := t.relOf(ns, ino)
-	if err != nil {
-		return nil
-	}
-	abs, err := t.abs(ns, rel)
-	if err != nil {
-		return nil
-	}
-	var st unix.Stat_t
-	if err := unix.Lstat(abs, &st); err != nil {
-		return nil
-	}
-	if st.Mode&syscall.S_IFMT != syscall.S_IFREG || st.Size == 0 || st.Size > int64(wire.MaxPrefetch) {
-		return nil
-	}
-	f, err := os.OpenFile(abs, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
-	if err != nil {
+	f, size, ok := openCapped(t, ns, ino)
+	if !ok {
 		return nil
 	}
 	defer f.Close()
-	buf := make([]byte, st.Size)
+	buf := make([]byte, size)
 	if _, err := io.ReadFull(f, buf); err != nil {
 		return nil
 	}
 	return buf
+}
+
+func openCapped(t *Tree, ns string, ino uint64) (*os.File, int64, bool) {
+	t.op.RLock()
+	defer t.op.RUnlock()
+	rel, err := t.relOf(ns, ino)
+	if err != nil {
+		return nil, 0, false
+	}
+	abs, err := t.abs(ns, rel)
+	if err != nil {
+		return nil, 0, false
+	}
+	var st unix.Stat_t
+	if err := unix.Lstat(abs, &st); err != nil {
+		return nil, 0, false
+	}
+	if st.Mode&syscall.S_IFMT != syscall.S_IFREG || st.Size == 0 || st.Size > int64(wire.MaxPrefetch) {
+		return nil, 0, false
+	}
+	f, err := os.OpenFile(abs, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, 0, false
+	}
+	return f, st.Size, true
 }
 
 func readFile(f *os.File, p wire.Params) (wire.Result, error) {

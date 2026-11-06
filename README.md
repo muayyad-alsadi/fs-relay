@@ -94,9 +94,13 @@ install -d -m 700 ~/.config/fs-relay
 read it, so keep the file at mode 600. `-token` still works, but the value
 sits in the process list (`ps aux`), which every local user can read.
 
-The server creates the `-data` directory if it is missing, but it never
-creates `data/<namespace>`. Create each namespace directory before a mount
-joins it; a missing namespace is refused with HTTP 404. The mount checks its
+The server creates the `-data` directory if it is missing. It takes an advisory
+lock on the data root, so a second `fs-relay` exits with an error that can name
+the holding PID instead of serving the same tree unless `-force-multi-serve` is
+passed. Programs that access the data directory directly without honoring the
+lock are not blocked. The server never creates `data/<namespace>`. Create each
+namespace directory before a mount joins it; a missing namespace is refused with
+HTTP 404. The mount checks its
 mountpoint before connecting, refuses a missing or non-directory path, and
 refuses a non-empty directory unless `-force-existing-mnt` is passed.
 
