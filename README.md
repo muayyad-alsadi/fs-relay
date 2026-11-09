@@ -22,11 +22,11 @@ Can be used for:
 - SQLite works with its default rollback journal. `PRAGMA journal_mode=WAL` fails, because WAL needs a shared-memory file this filesystem cannot provide.
 - Writes reach other mounts when the file is closed or synced.
 
-| Concern | Traditional mounts (NFS, SMB, s3fs) | fs-relay |
-|---|---|---|
-| Privileges | Root daemons and kernel modules | Unprivileged client via `fusermount3` |
-| Network | Dedicated RPC/SMB ports and firewall rules | Plain HTTP and WebSocket (`-post` fallback if a proxy blocks WS) |
-| Multi-host locks | Missing or local-only on most FUSE mounts | Server-enforced POSIX byte-range and `flock` locks (safe for SQLite rollback journals) |
+| Concern | NFS and SMB | s3fs | fs-relay |
+|---|---|---|---|
+| Privileges | Root daemons and kernel modules | Unprivileged FUSE mount | Unprivileged FUSE mount (`fusermount3`) |
+| Network | Dedicated RPC/SMB ports and firewall rules | HTTP to an object store (one request per object call) | Plain HTTP and WebSocket (`-post` fallback if a proxy blocks WS) |
+| Multi-host locks | Server locks (often brittle across WANs) | No POSIX byte-range locks | Server-enforced POSIX byte-range and `flock` locks when one `fs-relay` serves the data directory (safe for SQLite rollback journals; `-force-multi-serve` does not share a lock table across servers) |
 
 ## How it compares
 
@@ -58,14 +58,7 @@ On this archive the default mount unpacks ahead of s3fs (9.78 s against 21.01 s)
 
 ## Building
 
-Install the latest release with `go install`:
-
-```bash
-go install github.com/muayyad-alsadi/fs-relay/cmd/fs-relay@latest
-go install github.com/muayyad-alsadi/fs-relay/cmd/fs-relay-bind@latest
-```
-
-Or build from a local checkout:
+Download the prebuilt release archive from [GitHub Releases](https://github.com/muayyad-alsadi/fs-relay/releases), or build from a local checkout:
 
 ```bash
 go build -o fs-relay ./cmd/fs-relay
@@ -78,7 +71,7 @@ Even better, we have a [justfile](https://just.systems/man/en/) to help you do *
 just build
 ```
 
-You can place the binaries in `~/.local/bin/` or `/usr/local/bin`.
+You can place the binaries in `~/.local/bin/` or `/usr/local/bin` (and ensure that directory is on your `PATH` if you invoke `fs-relay` or `fs-relay-bind` without `./`).
 The binary `fs-relay` goes on the storage machine, and `fs-relay-bind` to as many client machines as you want.
 There is no cross dependency between the two and there is no problem if you put both on every machine.
 
@@ -119,7 +112,7 @@ install -d -m 700 ~/.config/fs-relay
 | `fs-relay-bind` | `-allow-other` | `false` | Allow other local users on the client host to read the mount |
 | `fs-relay-bind` | `-force-existing-mnt` | `false` | Mount over a non-empty mountpoint directory |
 | `fs-relay-bind` | `-debug` | `false` | Log FUSE traffic |
-| Both | `update` | | Self-update both binaries from the latest GitHub release |
+| Both | `update` | | Self-update the binary (and its companion binary if present in the same directory) from the latest GitHub release |
 | Both | `version` / `-version` | | Print build version and exit |
 | Both | `help` / `-h` | | Print usage and exit |
 
@@ -151,13 +144,13 @@ does not hang.
 
 ### Updating in place
 
-Both binaries can update themselves and their companion binary from the latest GitHub release:
+Both binaries can update themselves (and their companion binary if it is installed beside the executable in the same directory) from the latest GitHub release:
 
 ```bash
 ./fs-relay update
 ```
 
-`update` verifies the release archive against its SHA-256 digest, preserves existing file permissions, stages both binaries in temporary files in the target directory, and rolls back if either binary fails to swap. On startup, the binaries check once every 12 hours in the background whether a newer release is out and print a notice on stderr. Set `FS_RELAY_NO_UPDATE_CHECK=1` to disable the background check.
+`update` verifies the release archive against its SHA-256 digest, preserves existing file permissions, stages the updated binaries in temporary files in the target directory, and rolls back if either binary fails to swap. Run `update` separately on any other hosts or directories. On startup, release builds of `fs-relay` check once every 12 hours in the background whether a newer release is out and print a notice on stderr (`fs-relay-bind` and development builds skip the check). Set `FS_RELAY_NO_UPDATE_CHECK=1` to disable the startup check.
 
 ### Smoke check
 
